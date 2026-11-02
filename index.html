@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>യക്ഷി – Kerala Horror</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Georgia,'Noto Sans Malayalam',serif;color:#e8dcc0}
+canvas{display:block}
+#menu{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:radial-gradient(#10201a,#000);z-index:9;text-align:center}
+#menu h1{font-size:64px;margin:0;color:#c9302c;text-shadow:0 0 30px #7a0000}
+#menu p{margin:0;opacity:.7;max-width:420px;line-height:1.5}
+input,button{font:inherit;padding:12px 16px;border-radius:6px;border:1px solid #5a4a30;background:#0b0f0d;color:#e8dcc0;text-align:center}
+button{background:#7a1410;cursor:pointer;border-color:#c9302c}button:hover{background:#a01c16}
+#hud{position:fixed;inset:0;pointer-events:none;z-index:5}
+#vig{position:absolute;inset:0;background:radial-gradient(transparent 45%,rgba(0,0,0,.85));box-shadow:inset 0 0 calc(var(--f,0)*160px) rgba(150,0,0,calc(var(--f,0)*.7))}
+#info{position:absolute;top:14px;left:16px;font-size:18px;text-shadow:0 0 6px #000}
+#prompt{position:absolute;bottom:18%;width:100%;text-align:center;font-size:20px;color:#ffb347;text-shadow:0 0 8px #000}
+#flash{position:absolute;inset:0;background:#fff;opacity:0;transition:opacity 1.2s}
+#flash.on{opacity:1;background:radial-gradient(#fff,#a00);transition:none}
+#msg{position:absolute;top:35%;width:100%;text-align:center;font-size:34px;color:#ffd37a;text-shadow:0 0 20px #000}
+</style></head><body>
+<div id="menu">
+  <h1>യക്ഷി</h1>
+  <p>Night in a Kerala tharavad. Find and light all 5 nilavilakku lamps together before the Yakshi finds you. Headphones recommended.</p>
+  <input id="name" placeholder="Your name" maxlength="14">
+  <input id="room" placeholder="Room code (share with friends)" maxlength="12" value="KERALA">
+  <button id="go">Enter the Night</button>
+  <p style="font-size:13px">WASD move · Shift run · Mouse look · E light lamp · F torch</p>
+</div>
+<div id="hud" style="display:none"><div id="vig"></div><div id="info"></div><div id="prompt"></div><div id="msg"></div><div id="flash"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const T=THREE,$=id=>document.getElementById(id),R=s=>()=>(s=(s*1664525+1013904223)>>>0)/4294967296;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------- renderer / scene ---------- */
+const renderer=new T.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.background=new T.Color(0x04080a);scene.fog=new T.FogExp2(0x061014,0.04);
+const cam=new T.PerspectiveCamera(70,innerWidth/innerHeight,.1,200);scene.add(cam);
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
+scene.add(new T.HemisphereLight(0x2a3f5a,0x0a140c,.35));
+const moon=new T.DirectionalLight(0x6f8fc0,.35);moon.position.set(-30,60,20);scene.add(moon);
+const torch=new T.SpotLight(0xffe2b0,2.2,38,.5,.55,1.4);cam.add(torch);cam.add(torch.target);torch.target.position.set(0,0,-5);torch.position.set(.2,-.2,0);
+
+/* ghost */
+const ghost=new T.Group();
+const gm=new T.MeshStandardMaterial({color:0xdddddd,emissive:0x555555,transparent:true,opacity:.85,roughness:1});
+const gb=new T.Mesh(new T.CylinderGeometry(.28,.6,2,12),gm);gb.position.y=1.1;ghost.add(gb);
+const gh=new T.Mesh(new T.SphereGeometry(.24,12,12),gm);gh.position.y=2.35;ghost.add(gh);
+const hair=new T.Mesh(new T.CylinderGeometry(.22,.12,1.9,8),new T.MeshBasicMaterial({color:0x000000}));hair.position.set(0,1.5,-.2);ghost.add(hair);
+const eyeL=new T.PointLight(0xff2010,1.2,9);eyeL.position.y=2.35;ghost.add(eyeL);scene.add(ghost);ghost.position.set(0,0,-75);
+
+/* ground */
+(()=>{const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');x.fillStyle='#16301a';x.fillRect(0,0,256,256);
+for(let i=0;i<5000;i++){x.fillStyle=`hsl(${95+Math.random()*40},${35+Math.random()*25}%,${6+Math.random()*14}%)`;x.fillRect(Math.random()*256,Math.random()*256,2,Math.random()*5+1)}
+const t=new T.CanvasTexture(c);t.wrapS=t.wrapT=T.RepeatWrapping;t.repeat.set(70,70);
+const g=new T.Mesh(new T.PlaneGeometry(400,400),new T.MeshStandardMaterial({map:t,roughness:1}));g.rotation.x=-Math.PI/2;scene.add(g)})();
+
+/* ---------- world (built from server seed) ---------- */
+let W=new T.Group(),cols=[],lampObjs=[];
+function build(seed,ld){
+  scene.remove(W);W=new T.Group();scene.add(W);cols=[];lampObjs=[];
+  const r=R(seed),tm=new T.MeshStandardMaterial({color:0x4a3a2a,roughness:1}),lm=new T.MeshStandardMaterial({color:0x1f5226,roughness:.9,side:T.DoubleSide});
+  const lg=new T.PlaneGeometry(1.1,4.5);lg.translate(0,2.25,0);lg.rotateX(-Math.PI/2);
+  for(let i=0;i<110;i++){
+    const a=r()*6.283,d=12+r()*95,h=7+r()*4,lean=(r()-.5)*.25,x=Math.cos(a)*d,z=Math.sin(a)*d;
+    if(ld.some(l=>Math.hypot(l.x-x,l.z-z)<3)||Math.hypot(x,z-18)<5)continue;
+    const p=new T.Group();p.position.set(x,0,z);
+    const tr=new T.Mesh(new T.CylinderGeometry(.2,.34,h,8),tm);tr.position.y=h/2;tr.rotation.z=lean;p.add(tr);
+    const top=new T.Group();top.position.set(-Math.sin(lean)*h,h*Math.cos(lean),0);
+    for(let k=0;k<8;k++){const lf=new T.Mesh(lg,lm);lf.rotation.x=-.5;const gp=new T.Group();gp.rotation.y=k*.785;gp.add(lf);top.add(gp)}
+    p.add(top);W.add(p);cols.push([x,z,.35]);
+  }
+  /* tharavad */
+  const H=new T.Group(),wall=new T.MeshStandardMaterial({color:0x9b8a70,roughness:1}),wood=new T.MeshStandardMaterial({color:0x2e1a10,roughness:.9}),roof=new T.MeshStandardMaterial({color:0x5a2418,roughness:1});
+  const b=new T.Mesh(new T.BoxGeometry(14,3.6,9.4),wall);b.position.y=1.8;H.add(b);
+  for(const s of[-1,1]){const rf=new T.Mesh(new T.BoxGeometry(15.5,.25,6.2),roof);rf.position.set(0,5,s*2.6);rf.rotation.x=s*.62;H.add(rf)}
+  for(let i=-3;i<=3;i+=2){const pl=new T.Mesh(new T.CylinderGeometry(.18,.18,3.4,8),wood);pl.position.set(i*1.8,1.7,5.6);H.add(pl)}
+  const dr=new T.Mesh(new T.BoxGeometry(1.6,2.6,.1),wood);dr.position.set(0,1.3,4.72);H.add(dr);
+  const wl=new T.PointLight(0xff8a2a,1.1,16);wl.position.set(0,2,6.5);H.add(wl);H.userData.wl=wl;W.add(H);W.userData.house=H;
+  /* lamps (nilavilakku) */
+  const brass=new T.MeshStandardMaterial({color:0xb8862b,metalness:.8,roughness:.35});
+  ld.forEach(l=>{
+    const g=new T.Group();g.position.set(l.x,0,l.z);
+    const bs=new T.Mesh(new T.CylinderGeometry(.5,.6,.15,16),brass);bs.position.y=.08;g.add(bs);
+    const st=new T.Mesh(new T.CylinderGeometry(.07,.12,1.3,8),brass);st.position.y=.8;g.add(st);
+    const pl=new T.Mesh(new T.CylinderGeometry(.45,.2,.12,16),brass);pl.position.y=1.5;g.add(pl);
+    const fm=new T.MeshBasicMaterial({color:0x4466aa}),fl=new T.Mesh(new T.SphereGeometry(.1,8,8),fm);fl.position.y=1.7;g.add(fl);
+    const li=new T.PointLight(0x4466aa,.6,8);li.position.y=1.8;g.add(li);
+    W.add(g);lampObjs.push({x:l.x,z:l.z,fm,li,on:false});setLamp(lampObjs[lampObjs.length-1],l.on);
+  });
+}
+function setLamp(o,on){o.on=on;o.fm.color.set(on?0xffb040:0x4466aa);o.li.color.set(on?0xffa030:0x4466aa);o.li.intensity=on?2.2:.6;o.li.distance=on?24:8}
+
+/* other players */
+const others=new Map();
+function mkOther(){const g=new T.Group();const m=new T.Mesh(new T.CylinderGeometry(.3,.3,1.4,10),new T.MeshStandardMaterial({color:0x3a5a8a}));m.position.y=.9;g.add(m);
+  const h=new T.Mesh(new T.SphereGeometry(.22,10,10),new T.MeshStandardMaterial({color:0xc89a70}));h.position.y=1.8;g.add(h);
+  const l=new T.PointLight(0xffc070,.8,9);l.position.set(.4,1.4,0);g.add(l);scene.add(g);return g}
+
+/* ---------- AUDIO (procedural, spatial) ---------- */
+let AC,master,noise,gpan;
+const ntone=(f,type,t,dur,v,dest=master)=>{const o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.value=f;g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.0005,t+dur);o.connect(g);g.connect(dest);o.start(t);o.stop(t+dur+.05)};
+const nsrc=(loop)=>{const s=AC.createBufferSource();s.buffer=noise;s.loop=!!loop;return s};
+function initAudio(){
+  AC=new(window.AudioContext||webkitAudioContext)();
+  const comp=AC.createDynamicsCompressor();master=AC.createGain();master.gain.value=.9;master.connect(comp);comp.connect(AC.destination);
+  noise=AC.createBuffer(1,AC.sampleRate*2,AC.sampleRate);const d=noise.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  /* wind */
+  const w=nsrc(1),wf=AC.createBiquadFilter(),wg=AC.createGain(),lf=AC.createOscillator(),lg=AC.createGain();
+  wf.type='bandpass';wf.frequency.value=420;wf.Q.value=.7;wg.gain.value=.16;lf.frequency.value=.11;lg.gain.value=260;lf.connect(lg);lg.connect(wf.frequency);lf.start();
+  w.connect(wf);wf.connect(wg);wg.connect(master);w.start();
+  /* dark drone */
+  [55,55.7,82.4].forEach(f=>{const o=AC.createOscillator(),g=AC.createGain(),fl=AC.createBiquadFilter();o.type='sawtooth';o.frequency.value=f;fl.type='lowpass';fl.frequency.value=160;g.gain.value=.05;o.connect(fl);fl.connect(g);g.connect(master);o.start()});
+  /* crickets / jhingur */
+  [4300,4650].forEach((f,i)=>{const o=AC.createOscillator(),g=AC.createGain(),m=AC.createOscillator(),mg=AC.createGain(),gate=AC.createOscillator(),gg=AC.createGain();
+    o.frequency.value=f;g.gain.value=.012;m.type='square';m.frequency.value=24+i*3;mg.gain.value=.012;m.connect(mg);mg.connect(g.gain);
+    gate.frequency.value=.2+i*.07;gg.gain.value=.012;gate.connect(gg);gg.connect(g.gain);o.connect(g);g.connect(master);o.start();m.start();gate.start()});
+  /* ghost: spatial whisper + moan */
+  gpan=AC.createPanner();gpan.panningModel='HRTF';gpan.distanceModel='inverse';gpan.refDistance=3;gpan.rolloffFactor=1.6;gpan.maxDistance=80;gpan.connect(master);
+  const ws=nsrc(1),wb=AC.createBiquadFilter(),wl=AC.createOscillator(),wlg=AC.createGain(),wgn=AC.createGain();
+  wb.type='bandpass';wb.frequency.value=1700;wb.Q.value=5;wl.frequency.value=.35;wlg.gain.value=700;wl.connect(wlg);wlg.connect(wb.frequency);wl.start();wgn.gain.value=1.4;
+  ws.connect(wb);wb.connect(wgn);wgn.connect(gpan);ws.start();
+  [92,97].forEach(f=>{const o=AC.createOscillator(),g=AC.createGain(),fl=AC.createBiquadFilter();o.type='sawtooth';o.frequency.value=f;fl.type='lowpass';fl.frequency.value=260;g.gain.value=.5;o.connect(fl);fl.connect(g);g.connect(gpan);o.start()});
+  hb();
+}
+function listen(x,z,yaw){const L=AC.listener,fx=-Math.sin(yaw),fz=-Math.cos(yaw);
+  if(L.positionX){L.positionX.value=x;L.positionY.value=1.7;L.positionZ.value=z;L.forwardX.value=fx;L.forwardY.value=0;L.forwardZ.value=fz;L.upX.value=0;L.upY.value=1;L.upZ.value=0}else{L.setPosition(x,1.7,z);L.setOrientation(fx,0,fz,0,1,0)}
+  if(gpan.positionX){gpan.positionX.value=ghost.position.x;gpan.positionY.value=1.5;gpan.positionZ.value=ghost.position.z}else gpan.setPosition(ghost.position.x,1.5,ghost.position.z)}
+function step(){if(!AC)return;const t=AC.currentTime,s=nsrc(),f=AC.createBiquadFilter(),g=AC.createGain();f.type='lowpass';f.frequency.value=250+Math.random()*350;
+  g.gain.setValueAtTime(.4,t);g.gain.exponentialRampToValueAtTime(.001,t+.13);s.connect(f);f.connect(g);g.connect(master);s.start(t,Math.random(),.15)}
+function thump(v){const t=AC.currentTime;ntone(52,'sine',t,.22,v);ntone(44,'sine',t+.17,.28,v*.8)}
+function bell(){const t=AC.currentTime;[523,1318,1760,2637].forEach((f,i)=>ntone(f,'sine',t,3.2-i*.5,.22/(i+1)))}
+function winSnd(){const t=AC.currentTime;[392,494,587,784,988].forEach((f,i)=>ntone(f,'sine',t+i*.35,3,.18))}
+function scream(){const t=AC.currentTime,s=nsrc(),h=AC.createBiquadFilter(),g=AC.createGain();h.type='highpass';h.frequency.value=900;g.gain.setValueAtTime(1,t);g.gain.exponentialRampToValueAtTime(.001,t+1.5);s.connect(h);h.connect(g);g.connect(master);s.start(t,0,1.6);
+  [430,461,905].forEach(f=>{const o=AC.createOscillator(),og=AC.createGain();o.type='sawtooth';o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*2.6,t+.7);og.gain.setValueAtTime(.35,t);og.gain.exponentialRampToValueAtTime(.001,t+1.4);o.connect(og);og.connect(master);o.start(t);o.stop(t+1.5)});
+  ntone(38,'sine',t,1.4,1)}
+let gDist=99;function hb(){if(started&&gDist<35)thump(.55*(1-gDist/35)+.1);setTimeout(hb,clamp(gDist*28,420,1300))}
+
+/* ---------- input / state ---------- */
+let ws,me=0,started=false,yaw=0,pitch=0,lit=0,shake=0,tNext=0,sendT=0;
+const pos={x:0,z:18},ghT={x:0,z:-75},keys={};
+addEventListener('keydown',e=>{keys[e.code]=1;if(!started)return;
+  if(e.code==='KeyF')torch.visible=!torch.visible;
+  if(e.code==='KeyE'){const i=nearLamp();if(i>=0)ws.send(JSON.stringify({t:'lamp',id:i}))}});
+addEventListener('keyup',e=>keys[e.code]=0);
+addEventListener('mousemove',e=>{if(document.pointerLockElement){yaw-=e.movementX*.0022;pitch=clamp(pitch-e.movementY*.0022,-1.3,1.3)}});
+renderer.domElement.addEventListener('click',()=>started&&renderer.domElement.requestPointerLock());
+const nearLamp=()=>lampObjs.findIndex(o=>!o.on&&Math.hypot(o.x-pos.x,o.z-pos.z)<3.5);
+const say=(t,ms=4000)=>{$('msg').textContent=t;clearTimeout(say.t);say.t=setTimeout(()=>$('msg').textContent='',ms)};
+
+$('go').onclick=()=>{
+  initAudio();
+  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
+  ws.onopen=()=>ws.send(JSON.stringify({t:'join',room:$('room').value||'KERALA',name:$('name').value||'Player'}));
+  ws.onclose=()=>say('Disconnected from server',99999);
+  ws.onmessage=ev=>{const m=JSON.parse(ev.data);
+    if(m.t==='w'){me=m.id;build(m.seed,m.lamps);pos.x=0;pos.z=18;lit=m.lamps.filter(l=>l.on).length;started=true;$('menu').style.display='none';$('hud').style.display='block';renderer.domElement.requestPointerLock();say('Light all 5 lamps. Stay together. Run.',5000)}
+    else if(m.t==='s'){ghT.x=m.g[0];ghT.z=m.g[1];const seen=new Set();
+      m.p.forEach(([id,x,z,ry])=>{if(id===me)return;seen.add(id);let o=others.get(id);if(!o){o={g:mkOther(),x,z,ry};others.set(id,o)}o.tx=x;o.tz=z;o.try=ry});
+      others.forEach((o,id)=>{if(!seen.has(id)){scene.remove(o.g);others.delete(id)}})}
+    else if(m.t==='lamps'){m.on.forEach((v,i)=>{if(lampObjs[i]&&lampObjs[i].on!==v)setLamp(lampObjs[i],v)});lit=m.on.filter(Boolean).length;bell();say(m.by+' lit a lamp  ('+lit+'/5)')}
+    else if(m.t==='caught'&&m.id===me){scream();shake=1.2;$('flash').classList.add('on');setTimeout(()=>$('flash').classList.remove('on'),150);pos.x=0;pos.z=18;say('The Yakshi got you...',3000)}
+    else if(m.t==='win'){winSnd();say('Dawn breaks. You survived the night.',11000)}
+  };
+};
+
+/* ---------- main loop ---------- */
+const clock=new T.Clock();
+function collide(){for(const c of cols){const dx=pos.x-c[0],dz=pos.z-c[1],d=Math.hypot(dx,dz),m=c[2]+.4;if(d<m&&d>0){pos.x=c[0]+dx/d*m;pos.z=c[1]+dz/d*m}}
+  if(Math.abs(pos.x)<7.5&&Math.abs(pos.z)<5.5){const ox=7.5-Math.abs(pos.x),oz=5.5-Math.abs(pos.z);if(ox<oz)pos.x=Math.sign(pos.x||1)*7.5;else pos.z=Math.sign(pos.z||1)*5.5}
+  const r=Math.hypot(pos.x,pos.z);if(r>115){pos.x*=115/r;pos.z*=115/r}}
+function loop(){requestAnimationFrame(loop);const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime;
+  if(started){
+    const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),s=(keys.KeyD?1:0)-(keys.KeyA?1:0),moving=f||s;
+    if(moving){const sp=(keys.ShiftLeft?6.5:4.2)*dt,l=Math.hypot(f,s);
+      pos.x+=(-Math.sin(yaw)*f+Math.cos(yaw)*s)/l*sp;pos.z+=(-Math.cos(yaw)*f-Math.sin(yaw)*s)/l*sp;collide();
+      tNext-=dt;if(tNext<=0){step();tNext=keys.ShiftLeft?.3:.5}}
+    ghost.position.x+=(ghT.x-ghost.position.x)*.15;ghost.position.z+=(ghT.z-ghost.position.z)*.15;
+    ghost.rotation.y=Math.atan2(pos.x-ghost.position.x,pos.z-ghost.position.z);
+    gDist=Math.hypot(pos.x-ghost.position.x,pos.z-ghost.position.z);
+    ghost.position.y=Math.sin(t*2)*.12;gm.opacity=gDist<25?.55+Math.random()*.35:.8;
+    const fear=clamp(1-gDist/25,0,1);$('vig').style.setProperty('--f',fear.toFixed(2));
+    torch.intensity=fear>.5&&Math.random()<fear*.35?Math.random()*.6:2.2;
+    shake=Math.max(0,shake-dt);
+    cam.position.set(pos.x+(Math.random()-.5)*shake*.15,1.7+(moving?Math.sin(t*9)*.04:0),pos.z);
+    cam.rotation.set(pitch+(Math.random()-.5)*shake*.06,yaw,0,'YXZ');
+    listen(pos.x,pos.z,yaw);
+    others.forEach(o=>{o.x+=(o.tx-o.x)*.2;o.z+=(o.tz-o.z)*.2;o.g.position.set(o.x,0,o.z);o.g.rotation.y=o.try||0});
+    lampObjs.forEach(o=>{o.li.intensity*=1;if(o.on)o.li.intensity=2+Math.sin(t*14+o.x)*.3+Math.random()*.2});
+    if(W.userData.house)W.userData.house.userData.wl.intensity=.9+Math.sin(t*9)*.25*Math.random();
+    const nl=nearLamp(),near=lampObjs.filter(o=>!o.on).map(o=>Math.hypot(o.x-pos.x,o.z-pos.z)).sort((a,b)=>a-b)[0];
+    $('prompt').textContent=nl>=0?'Press E to light the lamp':'';
+    $('info').innerHTML='Lamps lit: <b>'+lit+'/5</b>'+(near!==undefined?' · nearest: '+Math.round(near)+' m':'')+' · Players: '+(others.size+1);
+    if((sendT-=dt)<=0&&ws.readyState===1){sendT=.066;ws.send(JSON.stringify({t:'m',x:pos.x,z:pos.z,ry:yaw+Math.PI}))}
+  }
+  renderer.render(scene,cam)}
+loop();
+</script></body></html>
